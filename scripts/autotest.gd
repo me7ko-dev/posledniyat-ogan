@@ -1,9 +1,10 @@
 extends Node
-## Автоматичен тест: `-- --autotest`. Играе по сценарий, проверява сметките, записа
-## и прогреса, докато те няма. Печата RESULT: PASS/FAIL, снимки в _autotest/.
+## Автоматичен тест: `-- --autotest`. Робот тича с героя и минава основния цикъл:
+## сече → носи в огъня → пътниците плащат → прибира монетите → строи всички квадрати →
+## дърварите сами пазят огъня → запис. Печата RESULT: PASS/FAIL, снимки в _autotest/.
 ## Ползва отделен запис (autotest_save.json), истинската игра не се пипа.
 
-const GameState := preload("res://scripts/game_state.gd")
+const SPEED := 3.0  # времето тече 3 пъти по-бързо
 
 var main: Node
 var _fails: Array[String] = []
@@ -20,119 +21,139 @@ func _process(_delta: float) -> void:
 
 
 func _run() -> void:
-	var st: GameState = main.state
-	var hud = main.hud
+	var p = main.player
 	await _wait(1.5)
 	await _shot("1_start")
+	Engine.time_scale = SPEED
 
-	# 1) Удари с брадвата
-	var before := st.wood
-	for i in 20:
-		hud.do_tap(Vector2(360, 900))
-	_check(is_equal_approx(st.wood, before + 20.0), "20 удара дават 20 дърва (дадоха %.1f)" % (st.wood - before))
+	# 1) Сече до пълно
+	var tree = main.nearest_tree(p.global_position, 100.0)
+	await _go(tree.global_position + Vector3(0, 0, 1.2))
+	await _until(func() -> bool: return p.stack.full() and p.stack.incoming == 0, 20.0)
+	_check(p.stack.count() == p.stack.capacity, "героят сече до пълно (%d/%d)" % [p.stack.count(), p.stack.capacity])
+	_check(main.tutorial >= 1, "подсказката мина към огъня")
+	await _shot("2_chop")
 
-	# 2) Първият оцелял
-	_check(hud.try_buy(GameState.Item.RECRUIT), "купуване на оцелял")
-	_check(st.survivor_count() == 2, "в лагера са 2 души")
-	_check(not hud.try_buy(GameState.Item.FIRE), "огънят е твърде скъп в началото")
+	# 2) Хвърля дървата в огъня
+	var fuel0: float = main.fire.fuel
+	await _go(main.fire.global_position + Vector3(0, 0, 1.9))
+	await _until(func() -> bool: return p.stack.is_empty() and main.fire.incoming == 0, 10.0)
+	_check(p.stack.is_empty(), "всички дърва отидоха в огъня")
+	_check(main.fire.fuel > fuel0, "огънят се разгоря (%.0f → %.0f)" % [fuel0, main.fire.fuel])
+
+	# 3) Пътниците плащат, героят прибира монетите
+	await _until(func() -> bool: return main.total_pile() >= 3, 40.0)
+	_check(main.total_pile() >= 3, "пътник се стопли и плати")
+	await _shot("3_travellers")
+	var pile = main.fullest_pile()
+	if pile:
+		await _go(pile.global_position)
+		await _until(func() -> bool: return main.coins > 0, 6.0)
+	_check(main.coins > 0, "монетите се прибират (%d)" % main.coins)
+
+	# 4) Строене: първият квадрат
+	main.coins += 30
+	var pad = main.pads.get("bench")
+	_check(pad != null, "квадратът „Още пейки“ се вижда")
+	if pad:
+		await _go(pad.global_position)
+		await _until(func() -> bool: return "bench" in main.built, 10.0)
+	_check("bench" in main.built, "пейките са построени")
+	_check(main.seats.size() == 5, "5 места до огъня (%d)" % main.seats.size())
+	await _shot("4_built")
+
+	# 5) Всички квадрати
+	main.coins += 3000
+	for id in ["backpack", "helper", "tent", "axe", "helper2", "forest", "bigfire"]:
+		pad = main.pads.get(id)
+		if pad == null:
+			_check(false, "квадратът %s не се вижда" % id)
+			continue
+		await _go(pad.global_position)
+		await _until(func() -> bool: return id in main.built, 15.0)
+		_check(id in main.built, "построено: %s" % id)
+	_check(main.helpers.size() == 2, "двама дървари (%d)" % main.helpers.size())
+	_check(main.trees.size() == 13, "13 дървета след новата гора (%d)" % main.trees.size())
+	_check(p.stack.capacity == 12, "раницата носи 12")
+
+	# 6) Дърварите сами пазят огъня 90 сек
+	await _go(Vector3(5.5, 0, 5.5))
+	main.fire.fuel = 25.0
+	var lowest := 999.0
+	for i in 90:
+		await _wait(1.0)
+		lowest = minf(lowest, main.fire.fuel)
+	_check(lowest > 0.0, "дърварите не оставят огъня да угасне (най-малко %.0f сек)" % lowest)
+	_check(main.travellers.size() > 0, "пътниците идват (%d)" % main.travellers.size())
+	await _go(main.fire.global_position + Vector3(0, 0, 3.0))
 	await _wait(1.0)
-	await _shot("2_first_recruit")
+	await _shot("5_camp")
 
-	# 3) 15 минути игра на бързи обороти: първите 3 мин удря по 2 пъти/сек, после само чака
-	for sec in 900:
-		st.tick(1.0)
-		if sec < 180:
-			for k in 2:
-				st.tap()
-		_bot_buy(hud, st)
-		if (sec + 1) % 180 == 0:
-			print("мин %2d: дърва=%d хора=%d/%d огън=%d брадви=%d ръкавици=%d  %+.1f/сек" % [
-				(sec + 1) / 60, st.wood, st.survivor_count(), st.seats(), st.fire_level,
-				st.axe_level, st.gloves_level, st.net_rate()])
-	_check(st.survivor_count() >= 8, "след 15 мин има поне 8 души (има %d)" % st.survivor_count())
-	_check(st.fire_level >= 3, "след 15 мин огънят е поне ниво 3 (ниво %d)" % st.fire_level)
-	_check(st.net_rate() > 0.0, "лагерът печели дърва")
-	await _wait(1.5)
-	await _shot("3_camp_15min")
+	# 7) Огънят угасва: пътникът чака, трепери и си тръгва
+	var helpers: Array = main.helpers.duplicate()
+	for h in helpers:
+		h.process_mode = Node.PROCESS_MODE_DISABLED
+	main.fire.fuel = 0.0
+	await _wait(3.0)
+	_check(not main.fire.burning(), "огънят угасна")
+	await _shot("6_cold")
+	for h in helpers:
+		h.process_mode = Node.PROCESS_MODE_INHERIT
 
-	# 4) Огънят гасне: голям огън, малко хора, без дърва
-	var saved := st.to_dict()
-	st.names.resize(2)
-	st.axe_level = 0
-	st.fire_level = 8
-	st.wood = 0.0
-	st.tick(1.0)
-	_check(st.is_cold(), "огънят гасне, когато няма дърва")
-	await _wait(2.5)
-	await _shot("4_cold")
-	st.from_dict(saved)
-	_check(not st.is_cold(), "след възстановяване огънят пак гори")
-
-	# 5) Запис и 1 час отсъствие
+	# 8) Запис
+	var coins: int = main.coins
 	main.save_game()
 	var d: Dictionary = JSON.parse_string(FileAccess.get_file_as_string(main.save_path))
-	d["last_seen"] = float(d["last_seen"]) - 3600.0
-	var f := FileAccess.open(main.save_path, FileAccess.WRITE)
-	f.store_string(JSON.stringify(d))
-	f.close()
-	var st2 := GameState.new()
-	_check(st2.load_from(main.save_path), "записът се чете")
-	_check(st2.names == st.names and st2.fire_level == st.fire_level and st2.axe_level == st.axe_level
-		and st2.gloves_level == st.gloves_level and absf(st2.wood - st.wood) < 1.0, "записът пази всичко")
-	var away := st2.seconds_since_seen()
-	var expected := st2.net_rate() * away
-	var gained := st2.apply_offline(away)
-	_check(absf(away - 3600.0) < 5.0, "отсъствие около 1 час (%.0f сек)" % away)
-	_check(absf(gained - expected) <= absf(expected) * 0.01 + 1.0,
-		"прогрес докато те няма: +%.0f (очаквано %.0f)" % [gained, expected])
+	_check(int(d.coins) == coins, "записът пази монетите")
+	_check((d.built as Array).size() == 8, "записът пази построеното")
+	_check(main.offline_gain(3600.0) > 0, "с дървари се печели и докато те няма (%d за 1 ч)" % main.offline_gain(3600.0))
 
-	# таванът е 8 часа
-	var st3 := GameState.new()
-	st3.from_dict(st.to_dict())
-	var g24 := st3.apply_offline(24.0 * 3600.0)
-	_check(absf(g24 - st.net_rate() * GameState.OFFLINE_CAP) < 1.0, "таванът е 8 часа")
-
-	hud.show_offline(away, gained)
-	await _wait(1.0)
-	await _shot("5_offline")
-
-	_fps.sort()
-	print("FPS: min=%d  median=%d" % [_fps[0], _fps[_fps.size() / 2]])
-	for msg in _fails:
-		print("  НЕ МИНА: " + msg)
-	print("RESULT: %s" % ("PASS" if _fails.is_empty() else "FAIL"))
+	Engine.time_scale = 1.0
+	var avg := 0.0
+	for f in _fps:
+		avg += f
+	avg /= maxf(1.0, _fps.size())
+	print("FPS средно: %.0f" % avg)
+	if _fails.is_empty():
+		print("RESULT: PASS")
+	else:
+		print("RESULT: FAIL")
+		for f in _fails:
+			print("  ✗ " + f)
 	get_tree().quit(0 if _fails.is_empty() else 1)
 
 
-## Купува най-евтиното полезно нещо, докато има пари. Огънят — само когато местата са пълни.
-func _bot_buy(hud, st: GameState) -> void:
-	for guard in 50:
-		var best := -1
-		var best_cost := INF
-		for item: int in GameState.Item.values():
-			if item == GameState.Item.FIRE and st.has_seat():
-				continue
-			if item == GameState.Item.RECRUIT and not st.has_seat():
-				continue
-			if st.cost(item) < best_cost:
-				best = item
-				best_cost = st.cost(item)
-		if best < 0 or not hud.try_buy(best):
-			return
-
-
-func _check(ok: bool, msg: String) -> void:
-	print(("  ок: " if ok else "  ГРЕШКА: ") + msg)
+func _check(ok: bool, what: String) -> void:
+	print(("  ✓ " if ok else "  ✗ ") + what)
 	if not ok:
-		_fails.append(msg)
+		_fails.append(what)
 
 
 func _wait(sec: float) -> void:
 	await get_tree().create_timer(sec).timeout
 
 
-func _shot(shot_name: String) -> void:
+## Води героя до точката (или докато изтече времето).
+func _go(to: Vector3, timeout := 15.0) -> void:
+	var p = main.player
+	p.bot_target = to
+	var t := 0.0
+	while t < timeout:
+		await get_tree().process_frame
+		t += get_process_delta_time()
+		if Vector2(p.global_position.x - to.x, p.global_position.z - to.z).length() < 0.3:
+			break
+	p.bot_target = null
+
+
+func _until(cond: Callable, timeout: float) -> void:
+	var t := 0.0
+	while t < timeout and not cond.call():
+		await get_tree().process_frame
+		t += get_process_delta_time()
+
+
+func _shot(name: String) -> void:
 	await RenderingServer.frame_post_draw
-	await RenderingServer.frame_post_draw
-	var path := ProjectSettings.globalize_path("res://_autotest/%s.png" % shot_name)
-	get_viewport().get_texture().get_image().save_png(path)
+	var img := get_viewport().get_texture().get_image()
+	img.save_png(ProjectSettings.globalize_path("res://_autotest/%s.png" % name))
