@@ -6,7 +6,6 @@ Idle arcade игра (като Pizza Ready и Burger Please) в снежна г�
 ## Адреси
 
 - **Хранилище в GitHub (частно):** https://github.com/me7ko-dev/posledniyat-ogan
-- **Папка на компютъра:** `C:\Users\roika\Projects\posledniyat-ogan`
 
 GitHub само пази файловете. Играта не може да се пусне от линка, а само на компютъра.
 
@@ -14,7 +13,7 @@ GitHub само пази файловете. Играта не може да с�
 
 **Двоен клик на иконата „Последният огън“ на работния плот.**
 
-Иконата пуска `C:\Users\roika\Tools\Godot\Godot_v4.7.2-stable_win64.exe --path "C:\Users\roika\Projects\posledniyat-ogan"`.
+Иконата пуска Godot 4.7.2 с папката на играта (`Godot_v4.7.2-stable_win64.exe --path <папката>`).
 Ако иконата я няма, кажи на Claude: „направи икона за Последният огън“.
 
 ## Как се играе
